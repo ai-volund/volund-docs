@@ -223,3 +223,52 @@ Alerts delivered to:
 - Dashboard notifications
 - Desktop app system notifications
 - Configurable webhook (for external alerting)
+
+---
+
+## Implementation Status
+
+*Implemented 2026-03-28.*
+
+### Agent-Side Usage Emission
+
+The agent runtime emits `io.volund.usage.tokens` CloudEvents after each LLM call. Token counts are captured from the gRPC streaming `Complete` message which contains `UsageInfo` (input/output tokens).
+
+```go
+// volund-agent/internal/events/emitter.go
+type UsageData struct {
+    TenantID       string `json:"tenant_id"`
+    ConversationID string `json:"conversation_id,omitempty"`
+    TaskID         string `json:"task_id,omitempty"`
+    InstanceID     string `json:"instance_id,omitempty"`
+    Provider       string `json:"provider"`
+    Model          string `json:"model"`
+    InputTokens    int    `json:"input_tokens"`
+    OutputTokens   int    `json:"output_tokens"`
+}
+```
+
+Zero-token calls are silently skipped to avoid noise.
+
+### Gateway-Side Persistence
+
+The gateway's `InstanceSyncer` subscribes to usage CloudEvents via NATS and persists them to the `usage_events` table:
+
+```sql
+CREATE TABLE usage_events (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES tenants(id),
+    conversation_id UUID REFERENCES conversations(id),
+    task_id         TEXT,
+    instance_id     TEXT,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### Usage API
+
+`GET /v1/usage/summary` returns aggregated token usage for the authenticated user's tenant. The full metering pipeline (compute time, storage, billing periods) from the design doc is deferred to a later phase — the current implementation covers the LLM token tracking end-to-end.

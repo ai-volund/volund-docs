@@ -322,3 +322,35 @@ observability:
       - tenant-usage
       - audit-trail
 ```
+
+---
+
+## Implementation Status
+
+*Implemented 2026-03-28.*
+
+### OTel SDK Bootstrap
+
+Both `volund` (gateway) and `volund-agent` have an `internal/otel/otel.go` module:
+
+```go
+func Init(serviceName, otlpEndpoint string) (func(context.Context) error, error)
+```
+
+Returns a shutdown function. Sets up `TracerProvider` with OTLP/gRPC exporter, `MeterProvider` with Prometheus exporter, and a custom `slog.Handler` that extracts `trace_id` from span context.
+
+### HTTP Tracing
+
+The gateway wraps its mux with `otelhttp.NewMiddleware()` for automatic span creation on every HTTP request.
+
+### NATS Trace Propagation
+
+Trace context is injected into NATS message headers on dispatch and extracted on the agent side, using OTel's `TextMapPropagator` with a custom NATS header carrier.
+
+### Prometheus Metrics
+
+Key metrics registered via OTel MeterProvider:
+- `volund_dispatch_total` — counter of dispatched tasks
+- `volund_dispatch_duration_seconds` — histogram of dispatch latency
+- `volund_claim_total` — counter of instance claims
+- `volund_active_instances` — gauge of currently active agent instances

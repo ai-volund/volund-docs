@@ -154,8 +154,14 @@ securityContext:
 
 ### Tool Execution Sandboxing
 
-Tools that execute untrusted code use `kubernetes-sigs/agent-sandbox`:
+**v1 (implemented 2026-03-28) — subprocess isolation:**
+- **Process groups**: `Setpgid = true` isolates child processes
+- **Resource limits**: ulimit wrappers on Linux — CPU time (60s), virtual memory (256MB), file size (64MB), file descriptors (64), processes (32)
+- **Restricted environment**: only `PATH`, `HOME`, `LANG`, `TMPDIR` passed to subprocesses
+- **Platform-aware**: build tags (`rlimit_linux.go` / `rlimit_other.go`) handle Linux vs other platforms
+- **Sandbox service**: optional HTTP endpoint (`VOLUND_SANDBOX_ENDPOINT`) for delegating execution to an isolated service
 
+**v2 (planned) — `kubernetes-sigs/agent-sandbox`:**
 - **gVisor runtime class** for compute isolation (syscall filtering)
 - **Network policies**: default-deny, only allow explicitly declared hosts
 - **Filesystem**: isolated `/app` directory, no access to host filesystem
@@ -284,6 +290,17 @@ User → Login (email/password or OIDC) → JWT access token + refresh token
   ├── Refresh token: long-lived (7 days), stored server-side, rotated on use
   └── OIDC: supports Google, GitHub, Azure AD, Okta
 ```
+
+**OIDC Implementation (2026-03-28):**
+
+OIDC SSO is implemented in `volund/internal/auth/oidc.go` using `github.com/coreos/go-oidc/v3`. Configuration holds an array of `OIDCProvider{Name, ClientID, ClientSecret, Issuer}`.
+
+Routes:
+- `GET /v1/auth/oidc/providers` — returns configured OIDC providers (public, no auth required)
+- `GET /v1/auth/oidc/{provider}` — generates state parameter, redirects to provider authorize URL
+- `GET /v1/auth/oidc/{provider}/callback` — exchanges authorization code, verifies ID token, finds or creates user via `FindOrCreateByOIDC(provider, sub, email)`, issues JWT
+
+The `users` table has `oidc_provider` and `oidc_sub` columns (migration `007_oidc_provider`). Users created via OIDC are auto-provisioned with a personal tenant. Existing email/password auth is unchanged — OIDC is additive.
 
 ### Org Invite Flow
 

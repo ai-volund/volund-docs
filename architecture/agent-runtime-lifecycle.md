@@ -337,3 +337,32 @@ type AfterToolHook func(ctx context.Context, call ToolCall, result ToolResult) (
 Common uses:
 - `beforeToolCall`: validate args, enforce allow-list, inject tenant context
 - `afterToolCall`: redact secrets from results, add attribution metadata
+
+### Code Execution Sandbox (v1)
+
+*Implemented 2026-03-28.*
+
+The `run_code` tool executes code in a sandboxed subprocess with resource limits:
+
+**Linux (production):**
+- Process isolation via `Setpgid = true` (new process group)
+- ulimit wrappers: CPU time (60s), virtual memory (256MB), file size (64MB), file descriptors (64), processes (32)
+- Restricted environment variables (only `PATH`, `HOME`, `LANG`, `TMPDIR`)
+
+**Non-Linux (development):**
+- No-op resource limits (Darwin/Windows lack `ulimit` in the same way)
+- Same restricted environment variables
+
+The sandbox is implemented with build tags:
+- `volund-agent/internal/tools/builtin/rlimit_linux.go` — Linux-specific `applyResourceLimits` and `wrapWithLimits`
+- `volund-agent/internal/tools/builtin/rlimit_other.go` — No-op stubs for other platforms
+
+A standalone `sandbox-service` binary (`volund-agent/cmd/sandbox-service/`) provides HTTP-based sandboxed execution when `VOLUND_SANDBOX_ENDPOINT` is configured, allowing the agent to delegate code execution to an isolated service (v2 path toward gVisor).
+
+### Usage Tracking
+
+After each LLM call, the runtime emits a `io.volund.usage.tokens` CloudEvent with provider, model, and token counts. Zero-token calls are skipped. Usage data flows: agent → NATS → gateway `InstanceSyncer` → `usage_events` table.
+
+### Memory Context Injection
+
+Before entering the inner loop, the runtime checks if a memory manager is configured. If so, it retrieves the top-K relevant memories for the user's last message and appends them to the system prompt as a `<relevant-memories>` block.

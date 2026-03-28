@@ -208,6 +208,24 @@ User sends message to conversation
       → Error: "Your agent is starting up, one moment..."
 ```
 
+---
+
+## Delegation Hardening
+
+*Implemented 2026-03-28.*
+
+### Cycle Detection & Depth Limits
+
+Every task carries `ParentTaskID` and `DelegationDepth` fields. The dispatcher rejects tasks exceeding `MaxDelegationDepth = 5`. The agent runtime also checks depth before making delegation calls, providing defense-in-depth.
+
+### Delegation Timeouts
+
+Each delegation has a 120-second timeout. If the specialist exceeds this, the parent task's `watchTaskResult` fires a timer that cancels the delegation and returns a timeout error to the orchestrator.
+
+### Error Propagation
+
+Specialist errors are wrapped with context (task ID, specialist profile, original error) and returned to the orchestrator as a tool result error. The orchestrator can then decide to retry, use a different specialist, or report the failure to the user.
+
 ## UI Integration
 
 ### Chat View

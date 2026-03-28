@@ -1,6 +1,6 @@
 # ADR-005: Orchestrator + Specialist Agent Model
 
-**Status:** Accepted
+**Status:** Amended
 **Date:** 2026-03-27
 
 ## Context
@@ -30,15 +30,23 @@ A two-tier agent model: **Orchestrator** + **Specialists**.
 ### Communication
 
 ```
-User ←→ Orchestrator ←→ Specialists
-                     ←→ Sandboxes (tool execution)
+User ←→ Orchestrator ←→ Specialists (via task tools + NATS)
+                     ←→ Tool execution (subprocess v1 / agent-sandbox v2)
 ```
 
-All inter-agent communication uses CloudEvents over NATS:
-- `io.volund.task.assigned` — orchestrator → specialist
-- `io.volund.task.progress` — specialist → orchestrator
-- `io.volund.task.completed` — specialist → orchestrator
-- `io.volund.task.failed` — specialist → orchestrator
+Orchestrators delegate to specialists using the **`create_task` tool** — it's a tool call in the LLM's output, not a direct API call. This keeps task creation composable and auditable in the conversation history.
+
+Specialist agents post updates **directly into the chat thread** (not relayed through the orchestrator), giving users real-time visibility. Task results flow back to the orchestrator via its Redis inbox.
+
+CloudEvents over NATS for lifecycle/control:
+- `io.volund.task.assigned` — control plane → specialist pod
+- `io.volund.task.progress` — specialist → control plane (Tasks UI)
+- `io.volund.task.completed` — specialist → control plane → orchestrator inbox
+- `io.volund.task.failed` — specialist → control plane → orchestrator inbox
+- `io.volund.task.input_needed` — specialist → control plane → gateway (triggers WAITING state)
+
+Lightweight NATS stream for real-time token delivery:
+- `volund.conv.{convId}.stream` — agent → gateway → WebSocket → UI
 
 ### Agent Profile Creation
 
@@ -53,3 +61,18 @@ Two paths:
 - Composable — specialists can be mixed and matched per workflow
 - Overhead — spawning specialist pods adds latency (mitigated by warm pools)
 - Complexity — need robust task tracking and failure handling between agents
+
+---
+
+## Amendment (2026-03): Built-in Tools for Task Orchestration
+
+The orchestrator delegates work through two built-in tools registered in the runtime:
+
+| Tool | Agent | Description |
+|------|-------|-------------|
+| `create_task` | Orchestrator only | Emits `task.assigned` CloudEvent, returns task ID |
+| `get_task_result` | Orchestrator only | Retrieves result for a completed task from inbox |
+
+Restricting `create_task` to orchestrators prevents specialists from spawning unbounded sub-agents without oversight. Specialists request user input via `task.input_needed` events (routing WAITING state in gateway), not by spawning further agents.
+
+The `create_task` tool takes `specialist_profile_id`, `task_description`, and optional `context` — the control plane handles pod claim and injection. The orchestrator does not manage pod lifecycle directly.

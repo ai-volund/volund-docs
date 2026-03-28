@@ -70,10 +70,11 @@ VOLUND is a multi-tenant, general-purpose AI agent platform running on Kubernete
 
 ### 1. API Gateway & Auth (`cmd/gateway`)
 - **Go service** using gRPC + REST (grpc-gateway)
-- JWT-based auth with refresh tokens
+- JWT-based auth with refresh tokens + OIDC SSO (Google, GitHub, Okta via `go-oidc/v3`)
 - Multi-tenant RBAC: Org → Team → User → Agent
 - Rate limiting per tenant/user
 - API versioning (v1)
+- OpenTelemetry instrumentation (`otelhttp` middleware, trace-ID in structured logs, Prometheus metrics)
 
 ### 2. Control Plane (`cmd/controlplane`)
 - **Tenant Manager**: org/team/user CRUD, onboarding
@@ -115,13 +116,17 @@ VOLUND is a multi-tenant, general-purpose AI agent platform running on Kubernete
 - **Vector DB** (pgvector extension): agent memory embeddings
 
 ### 6. Web Dashboard & Desktop App
-- **Web UI**: React SPA with three primary views:
-  - **Chat**: Multi-agent conversation thread — orchestrator, specialists, and user in one view
-  - **Tasks**: Dashboard of active/completed async jobs with progress tracking
-  - **Dashboard**: Agent management, usage, billing, Forge marketplace
-- **Desktop App**: Tauri 2.x (Rust backend + shared React frontend), system tray, native notifications, global shortcut
+- **Web UI**: React SPA with five views: Chat, Tasks, Agents, Forge, Settings
+- **Desktop App**: Tauri 2.x (Rust backend + shared React frontend), system tray, native notifications
+- **Auth**: Login/register with email/password + OIDC SSO (Google, GitHub, Okta). JWT persisted in localStorage with auto-refresh.
+- **Error handling**: Global ErrorBoundary, WebSocket reconnection with 5s timeout
 - Both connect via WebSocket gateway for real-time streaming
 - See [Channel Adapters](channel-adapters.md) for full details
+
+### 7. Testing Infrastructure
+- **Unit tests**: Full coverage for gateway (credentials, claim manager, circuit breaker) and agent (runtime, skills, tools, memory, orchestrator)
+- **Integration tests**: `testcontainers-go` spins up `pgvector/pgvector:pg16` + `nats:2-alpine`, runs all 8 migrations, exercises the full API flow (register → login → me → tenants → agents → conversations → usage → forge)
+- **Frontend**: TypeScript type checking + production build verification
 
 ---
 

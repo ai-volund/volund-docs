@@ -281,3 +281,53 @@ type Manager interface {
 
 The v1 `NoopManager` returns empty slices. The agent loop calls the interface — swapping in the Redis+pgvector implementation requires no loop changes.
 - Embedding vectors are stored alongside content — deleting content deletes the vector
+
+---
+
+## Memory Implementation: Decay, Deduplication & Context Injection
+
+*Implemented 2026-03-28.*
+
+### Time-Decay Scoring
+
+Memory retrieval uses a composite score that decays with age and boosts frequently-accessed memories:
+
+```sql
+score = cosine_similarity
+      * (1.0 / (1.0 + age_in_seconds / 2592000))   -- 30-day half-life
+      * (1.0 + LN(1.0 + access_count) / 5.0)        -- access frequency boost
+```
+
+The `memories` table has two additional columns:
+
+```sql
+ALTER TABLE memories
+    ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN last_accessed TIMESTAMPTZ;
+```
+
+When memories are returned from `SearchSimilar`, their `access_count` is incremented and `last_accessed` is updated. This creates a natural feedback loop — relevant memories stay fresh while unused ones decay.
+
+### Deduplication
+
+Before storing a new memory, the system checks for existing memories with >0.95 cosine similarity. If a near-duplicate is found, the existing memory is updated (content refreshed, `access_count` incremented) instead of inserting a duplicate. This prevents memory bloat from repeated interactions.
+
+### Auto Context Injection
+
+Before each LLM call, the agent runtime retrieves the top-K most relevant memories (default: 5) based on the user's latest message. These are injected into the system prompt as a structured block:
+
+```xml
+<relevant-memories>
+- Memory content 1
+- Memory content 2
+</relevant-memories>
+```
+
+The `Manager` interface includes:
+
+```go
+// RetrieveContext returns formatted memory context for injection into prompts.
+RetrieveContext(ctx context.Context, query string, limit int) string
+```
+
+This is called automatically in the agent's `processTask` function before entering the inner loop.

@@ -65,3 +65,4 @@ A [GitHub Action](.github/workflows/export-diagrams.yml) automatically converts 
 | [007](adr/007-multi-agent-chat.md) | Multi-agent chat with orchestrator inbox | Accepted |
 | [008](adr/008-observability.md) | Wide events + OpenTelemetry observability stack | Accepted |
 | [009](adr/009-security-model.md) | Multi-layer security model | Accepted |
+| [010](adr/010-agent-runtime-loop.md) | Two-tier agent runtime loop | Accepted |

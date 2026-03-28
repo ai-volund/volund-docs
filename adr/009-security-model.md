@@ -1,6 +1,6 @@
 # ADR-009: Multi-Layer Security Model
 
-**Status:** Accepted
+**Status:** Amended
 **Date:** 2026-03-27
 
 ## Context
@@ -28,3 +28,22 @@ VOLUND runs untrusted code (user tools, Forge skills, LLM-generated actions) in 
 - File-based secret mounting is more secure than env vars but requires volume mounts
 - gVisor adds ~5-10% overhead on sandboxed workloads but provides strong syscall isolation
 - OIDC support enables SSO for enterprise tenants
+
+---
+
+## Amendment (2026-03): v1 Tool Sandboxing Caveat
+
+Layer 2 (Agent sandboxing) is partially implemented in v1. The `run_code` built-in tool currently executes code as a subprocess inside the agent pod — not via `kubernetes-sigs/agent-sandbox`. Pod-level controls are in effect:
+
+- Agent pod runs non-root with read-only rootfs
+- No host network access
+- Resource limits enforced at pod level (CPU/memory)
+- Per-tool-call timeout (default 10s)
+- Subprocess working directory isolated to a temp dir
+
+Full `agent-sandbox` + gVisor integration is deferred to v2 (see ADR-003 amendment). The known gap: a compromised or malicious tool can read the agent pod's memory and environment variables. Mitigations in v1:
+- Secrets mounted as files with tight file permissions (not env vars)
+- Tool execution results are passed back to the agent, not written to shared state
+- Subprocess stdout/stderr captured, not streamed to shared file descriptors
+
+This gap is acceptable for v1 where tools are first-party (platform built-ins). Before enabling third-party Forge skills to execute code, v2 sandboxing is required.
