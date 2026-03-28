@@ -1,0 +1,45 @@
+name: Export Excalidraw Diagrams to SVG
+
+on:
+  push:
+    paths:
+      - 'architecture/diagrams/*.excalidraw.json'
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export-diagrams:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install excalirender
+        run: curl -fsSL https://raw.githubusercontent.com/JonRC/excalirender/main/install.sh | sh
+
+      - name: Export all diagrams to SVG
+        run: |
+          cd architecture/diagrams
+          for f in *.excalidraw.json; do
+            name="${f%.excalidraw.json}"
+            echo "Exporting $f -> ${name}.svg"
+            excalirender "$f" -o "${name}.svg"
+          done
+
+      - name: Check for changes
+        id: check
+        run: |
+          git diff --quiet architecture/diagrams/*.svg && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit SVGs
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add architecture/diagrams/*.svg
+          git commit -m "chore: auto-export Excalidraw diagrams to SVG"
+          git push
