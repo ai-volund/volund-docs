@@ -234,3 +234,75 @@ Actions: Cancel task, View details, Jump to chat message
 ### Orchestrator Inbox (Internal — not a user-facing UI)
 
 This is an internal system concept. Users don't see it. It's how the control plane queues work for the orchestrator to process on spin-up.
+
+---
+
+## Real-Time Architecture (Implementation)
+
+*Decided during implementation phase (2026-03).*
+
+### NATS as Backplane, Gateway as Bridge
+
+```
+User ──WS──► Gateway ─subscribe─► NATS: volund.conv.{convId}.stream ◄── Agent
+                │
+                └── POST /v1/conversations/{id}/messages
+                          │
+                    Control Plane
+                          │── ClaimInstance (FOR UPDATE SKIP LOCKED)
+                          │── NATS publish: volund.agent.{instanceId}.task
+                          └── returns 202 Accepted (response streams via WS)
+```
+
+The gateway subscribes to `volund.conv.{convId}.stream` the moment a WebSocket connects. The agent publishes every event (delta, tool_start, tool_end, agent_end) to that subject as they happen. The gateway just forwards — it knows nothing about what the agent is doing.
+
+This decoupling means:
+- Agent pods have no socket handles — they can't leak client connections
+- Any gateway instance can serve any conversation (no sticky routing needed at the gateway tier)
+- Scaling the gateway is stateless
+
+### Task Dispatch Flow
+
+```
+1. User sends message via WebSocket or REST POST
+2. Gateway:
+   a. Calls Control Plane gRPC: DispatchMessage(convId, message)
+   b. Subscribes to NATS: volund.conv.{convId}.stream
+3. Control Plane:
+   a. Persists message to DB
+   b. Claims warm instance (FOR UPDATE SKIP LOCKED in Postgres)
+   c. Publishes task: NATS volund.agent.{instanceId}.task
+   d. Returns instanceId to gateway
+4. Agent receives task, enters two-tier loop
+5. Events flow: Agent → NATS → Gateway → WebSocket → UI
+```
+
+### Steering and Follow-Up
+
+**Steering** (user correction mid-run):
+```
+User sends correction while agent is executing tool call
+  → Gateway publishes to NATS: volund.agent.{instanceId}.steer
+  → Agent drains steering queue before next LLM call
+  → Correction injected into context without interrupting in-flight LLM call
+```
+
+**Follow-up** (user sends next message while agent is finishing):
+```
+User sends new message while agent is in final LLM call
+  → Control Plane queues message (Redis list per conversation)
+  → Agent finishes current turn
+  → Agent drains follow-up queue → re-enters inner loop
+  → No re-claim needed (agent is still active)
+```
+
+### Specialist Asking the User a Question
+
+```
+Specialist needs clarification mid-task
+  → Publishes question event to volund.conv.{convId}.stream
+      { type: "question", from: "specialist", content: "Which branch?" }
+  → Gateway delivers to WebSocket → UI shows inline question in chat
+  → User replies → Gateway publishes to volund.agent.{specialistId}.steer
+  → Specialist receives steering message → continues
+```

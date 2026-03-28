@@ -277,3 +277,63 @@ Web UI → Agent Builder wizard
   → Step 5: Review and create
   → API call → AgentProfile CR created
 ```
+
+---
+
+## Agent Runtime Loop (Implementation)
+
+*Decided during implementation phase (2026-03).* The loop design is inspired by [pi-agent](https://github.com/badlogic/pi-mono/tree/main/packages/agent).
+
+### Two-Tier Loop
+
+```
+┌─── OUTER LOOP ──────────────────────────────────────────────────────┐
+│  Runs while there are pending user messages (follow-ups)            │
+│                                                                     │
+│  ┌── INNER LOOP ───────────────────────────────────────────────┐   │
+│  │  1. Drain steering messages (mid-run user corrections)      │   │
+│  │  2. Build context: system prompt + messages + tool schemas  │   │
+│  │  3. LLM call (streaming) → publish delta events to NATS    │   │
+│  │  4. If tool call → execute → append result → goto 1        │   │
+│  │  5. If final answer → persist message → publish agent_end  │   │
+│  └────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Check follow-up queue. Messages waiting? → re-enter inner loop    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Steering messages** — injected between tool calls but before the next LLM call. Enables real-time user correction mid-run without interrupting an in-flight LLM request.
+
+**Follow-up messages** — only processed once the inner loop is idle. Allows a user's second message to be picked up cleanly after the first turn completes.
+
+**Max rounds** — configurable per profile (`max_tool_rounds`, default: 10). Hard cap on tool-call iterations per turn to prevent infinite loops. A timeout also applies.
+
+### NATS Event Protocol
+
+Every event is published to `volund.conv.{convId}.stream`. The gateway subscribes on WebSocket connect and fans events to the client.
+
+| Event | Payload | When |
+|---|---|---|
+| `agent_start` | `{convId, agentId, profileType}` | Agent claimed, turn beginning |
+| `turn_start` | `{turnId}` | New inner loop iteration |
+| `delta` | `{turnId, content}` | Streaming text token from LLM |
+| `tool_start` | `{turnId, toolName, args}` | Tool execution beginning |
+| `tool_update` | `{turnId, toolName, partialResult}` | Incremental tool output (optional) |
+| `tool_end` | `{turnId, toolName, result, isError}` | Tool execution complete |
+| `turn_end` | `{turnId, stopReason}` | Inner loop iteration done |
+| `agent_end` | `{convId, agentId, messageId}` | Turn complete, agent returning to warm |
+| `error` | `{message, fatal}` | Error during execution |
+
+### Tool Dispatch Hooks
+
+```go
+// Called before every tool execution. Return block:true to prevent execution.
+type BeforeToolHook func(ctx context.Context, call ToolCall) (BlockDecision, error)
+
+// Called after every tool execution. Can transform or redact the result.
+type AfterToolHook func(ctx context.Context, call ToolCall, result ToolResult) (ToolResult, error)
+```
+
+Common uses:
+- `beforeToolCall`: validate args, enforce allow-list, inject tenant context
+- `afterToolCall`: redact secrets from results, add attribution metadata

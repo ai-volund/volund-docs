@@ -214,4 +214,70 @@ When the orchestrator delegates to a specialist:
 - Memory content is encrypted at rest (PostgreSQL TDE or application-level)
 - Users can view, edit, and delete their memories via the API
 - GDPR: full memory export and deletion per user
+
+---
+
+## Memory Implementation Decisions
+
+*Decided during implementation phase (2026-03).*
+
+### Three Tiers
+
+| Tier | Storage | Scope | TTL | Status |
+|---|---|---|---|---|
+| Working memory | In-process `[]Message` | Current turn only | Discarded after turn ends | ✅ v1 |
+| Session memory | Redis | Per conversation | Configurable (default 24h) | Phase 4 |
+| Long-term memory | pgvector | Per agent profile | Permanent (up to quota) | Phase 4 |
+
+Working memory is just the `messages` slice the agent holds during a single turn. It's the LLM's context window — no external storage needed. The agent holds it; when the turn ends and the pod returns to warm, it's gone.
+
+### Memory Namespace
+
+Memory is **scoped per agent profile** within a tenant, not per pod instance. This is essential because warm pool pods are interchangeable — any pod claiming a profile must have the same memory view.
+
+```
+Namespace format:  {tenantId}.{profileId}
+Shared namespace:  {tenantId}.shared       ← readable by all profiles in tenant
+```
+
+The shared namespace is used for:
+- Tenant-level uploaded documents
+- Knowledge base entries (product info, company context, etc.)
+- Artifacts produced by specialists that others need to read
+
+### Context Window Budget
+
+Before each LLM call the runtime applies a sliding window over working memory:
+
+```
+1. Count tokens in full message history
+2. If over model's context limit:
+   a. Summarize oldest messages (using a cheap/fast model call)
+   b. Replace summary block in messages
+   c. Retrieve relevant long-term memories via similarity search
+   d. Inject as "recalled context" system message
+3. Pass trimmed context to LLM
+```
+
+This is implemented in the `memory.Manager` interface so the no-op v1 implementation can be replaced without changing the agent loop.
+
+### Interface (v1 — no-op, v2 — Redis + pgvector)
+
+```go
+type Manager interface {
+    // Load recent messages for a conversation (session memory).
+    LoadSession(ctx context.Context, convID string, limit int) ([]Message, error)
+
+    // Persist a message to session memory.
+    SaveMessage(ctx context.Context, convID string, msg Message) error
+
+    // Search long-term memory by semantic similarity.
+    Search(ctx context.Context, query string, limit int) ([]MemoryEntry, error)
+
+    // Persist a fact or artifact to long-term memory.
+    Store(ctx context.Context, entry MemoryEntry) error
+}
+```
+
+The v1 `NoopManager` returns empty slices. The agent loop calls the interface — swapping in the Redis+pgvector implementation requires no loop changes.
 - Embedding vectors are stored alongside content — deleting content deletes the vector
