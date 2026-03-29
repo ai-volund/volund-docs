@@ -100,7 +100,7 @@ VOLUND is a multi-tenant, general-purpose AI agent platform running on Kubernete
 - Becomes an orchestrator or specialist based on injected profile
 - **Components**:
   - **LLM Client**: connects to the LLM Router via gRPC, supports streaming
-  - **Tool Executor**: sandboxed execution via kubernetes-sigs/agent-sandbox
+  - **Tool Executor**: sandboxed execution via subprocess + ulimit resource limits (v1); kubernetes-sigs/agent-sandbox with gVisor planned for v2
   - **Memory Manager**: working (in-process) + session (Redis) + long-term (PostgreSQL + pgvector)
   - **Inbox Processor**: drains queued messages/task results on spin-up
   - **Chat Writer**: posts messages directly to conversation threads via gateway
@@ -387,7 +387,7 @@ spec:
 | Operator framework | kubebuilder | Official K8s operator SDK for Go |
 | Object storage | MinIO (S3-compatible) | Self-hosted, K8s-native, or swap for cloud S3 |
 | Auth | JWT + OIDC | Stateless, supports SSO integration |
-| Tool sandboxing | kubernetes-sigs/agent-sandbox | CRD-based isolated pods for untrusted code execution |
+| Tool sandboxing | Subprocess + ulimit (v1), kubernetes-sigs/agent-sandbox (v2) | v1: process-level isolation for first-party tools. v2: CRD-based gVisor pods for third-party skill execution |
 | Agent execution | Serverless warm pools | Generic pods claimed on demand, released when idle |
 | Desktop app | Tauri 2.x | Lightweight, Rust backend, shared React frontend |
 | Observability | Wide events + OpenTelemetry | One structured event per request, distributed tracing |
@@ -400,6 +400,6 @@ spec:
 - **Tenant isolation**: Network policies prevent cross-tenant traffic
 - **Secret management**: LLM API keys encrypted at rest, injected as K8s secrets
 - **Agent sandboxing**: Non-root containers, read-only rootfs, seccomp profiles
-- **Tool execution**: Code execution in ephemeral containers or gVisor sandbox
+- **Tool execution**: Code execution in subprocess with ulimit resource limits (v1); ephemeral gVisor sandbox pods planned for v2 third-party skills
 - **RBAC**: Fine-grained permissions (org admin, team admin, user, viewer)
 - **Audit logging**: All API calls and agent actions logged with tenant context

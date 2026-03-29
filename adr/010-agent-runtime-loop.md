@@ -98,7 +98,7 @@ type Manager interface {
 }
 ```
 
-v1 ships `NoopManager` (returns empty slices, discards writes). v2 implements Redis session + pgvector long-term memory. The loop does not change between versions.
+**Amendment (2026-03-28):** The original plan was to ship v1 with `NoopManager`. In practice, v1 shipped with a functional long-term memory implementation: pgvector-backed semantic search, decay scoring, deduplication, and `RetrieveContext` wired into the runtime loop. The `memory.Manager` interface is injected at startup and the production implementation uses PostgreSQL + pgvector for storage with embedding-based retrieval. Session memory (Redis-backed, per-conversation) was added in v2. The loop does not change between versions.
 
 ## Consequences
 

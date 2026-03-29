@@ -165,17 +165,9 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 
 ## 4. Desktop & UI Polish (Medium Priority)
 
-### 4.1 Agent Profile Selection Per Conversation
+### ~~4.1 Agent Profile Selection Per Conversation~~ — RESOLVED
 
-**v1 state:** Users cannot choose which agent profile handles a conversation. The platform uses a default profile.
-
-**v2 plan:**
-- Profile picker dropdown in chat view (before or during conversation)
-- Per-conversation profile binding stored in conversation metadata
-- Profile switch mid-conversation (new agent_start event)
-- Show active profile name/icon in chat header
-
-**Affected repos:** `volund-desktop`, `volund`
+**Resolution:** Single orchestrator model adopted. The orchestrator agent handles all conversations and delegates to specialist agents as needed via `create_task`/`get_task_result`. No user-facing profile selection required.
 
 ### 4.2 Auto-Generate Conversation Titles
 
@@ -257,7 +249,9 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 
 ## 6. Architecture Evolution (Low Priority)
 
-### 6.1 Binary Split — Gateway + Control Plane
+### 6.1 Binary Split — Gateway + Control Plane — DEFERRED
+
+> **Status: Deferred indefinitely.** The single-binary architecture is performing well. This item will only be revisited when monitoring shows gateway replica counts exceeding control plane by 10x+, indicating genuinely divergent scaling needs. The internal package structure already supports splitting without refactoring.
 
 **v1 state:** Gateway and control plane run as a single `volund` binary with subcommands. Internal packages are structured to support splitting later.
 
@@ -269,7 +263,9 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 **ADR references:** ADR-001 ("split later if needed")
 **Trigger:** When gateway needs 10x+ replicas relative to control plane
 
-### 6.2 Protocol Buffers for WebSocket
+### 6.2 Protocol Buffers for WebSocket — DEFERRED
+
+> **Status: Deferred indefinitely.** JSON encoding is adequate for the current WebSocket event throughput. This item will only be revisited when profiling shows JSON parsing or bandwidth as a bottleneck in production. The added complexity of protobuf-js in the desktop client is not justified without measured need.
 
 **v1 state:** WebSocket events use JSON encoding.
 
@@ -281,17 +277,41 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 **ADR references:** Channel adapter architecture doc
 **Trigger:** Measured latency or bandwidth issues at scale
 
-### 6.3 Warm Pool Claim Latency SLA
+### ~~6.3 Warm Pool Claim Latency SLA~~ — DONE
 
 **v1 state:** Warm pool claim takes ~200-600ms (cold start). No explicit SLA target.
 
-**v2 plan:**
-- Define P50/P95/P99 latency targets for warm pool claims
-- Prometheus alerting on claim latency breaches
-- Pre-warming strategies based on usage patterns (time-of-day, tenant activity)
-- Claim latency tracked in Grafana dashboard
+**v2 implementation (complete):**
 
-**Affected repos:** `volund`, `volund-operator`
+**SLA targets:**
+| Percentile | Target | Alert Threshold |
+|-----------|--------|-----------------|
+| P50 | < 50ms | — |
+| P95 | < 200ms | Warning at 2min sustained |
+| P99 | < 500ms | Critical at 2min sustained |
+
+**Metrics added:**
+- `volund.claim.duration_seconds` — Float64Histogram with explicit bucket boundaries (10ms–5s), attributes: `result` (claimed/unavailable/error), `path` (cache_hit/db_claim)
+- `volund.warm_pool.size` — Int64UpDownCounter for available pod count
+
+**Prometheus alerting rules** (`deploy/local/prometheus-alerts.yaml`):
+- `ClaimLatencyP95High` — P95 > 200ms for 2m
+- `ClaimLatencyP99Critical` — P99 > 500ms for 2m
+- `WarmPoolExhaustion` — >10% unavailable claims for 3m
+- `WarmPoolDown` — Zero successful claims for 5m
+- `ClaimErrorRate` — >5% error rate for 2m
+- `WarmPoolHighUtilization` — >80% utilization for 5m
+
+**Grafana dashboard** (`deploy/local/grafana-dashboards.yaml`):
+- Claim latency P50/P95/P99 timeseries with SLA threshold lines
+- Claim latency heatmap
+- Claim rate by result (claimed/unavailable/error)
+- Claim success rate stat panel
+- Active instances vs warm pool size
+- Cache hit vs DB claim latency comparison
+- Dispatch latency percentiles
+
+**Affected repos:** `volund`
 
 ---
 
@@ -318,18 +338,19 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 |----------|-------|-------|------------|
 | **P0 — Blocker** | Security | 1.1 Agent Sandbox (gVisor) | Blocks third-party Forge skills |
 | **P0 — Blocker** | Security | 1.2 Prompt Injection Audit | Blocks production deployment |
-| **P1 — High** | Security | 1.3 Supply Chain Security | Blocks `forge publish` for community |
-| **P1 — High** | Core | 2.1 Shared Skill Runtime | Resource efficiency at scale |
-| **P1 — High** | Core | 2.2 Session Memory (Redis) | Multi-turn conversation quality |
-| **P1 — High** | Core | 2.3 WebSocket Routing Table | Horizontal gateway scaling |
-| **P2 — Medium** | Billing | 3.1 Full Metering Pipeline | Revenue tracking |
-| **P2 — Medium** | UI | 4.1 Agent Profile Selection | Core UX for multi-agent |
-| **P2 — Medium** | UI | 4.2 Auto-Generate Titles | UX polish |
-| **P2 — Medium** | UI | 4.3 File Upload | Feature completeness |
-| **P2 — Medium** | UI | 4.4 AI Elements Rendering | Visual polish |
-| **P2 — Medium** | Forge | 5.1 Forge CLI `dev` Mode | Skill developer experience |
-| **P2 — Medium** | Forge | 5.2 Skill Versioning | Ecosystem stability |
-| **P3 — Low** | Arch | 6.1 Binary Split | Only if scaling requires it |
-| **P3 — Low** | Arch | 6.2 Protobuf WebSocket | Only if bandwidth is an issue |
-| **P3 — Low** | Arch | 6.3 Claim Latency SLA | Operational maturity |
-| **P3 — Low** | Docs | 7.1-7.2 ADR Cleanup + Guides | Documentation hygiene |
+| ✅ **Done** | Security | 1.3 Supply Chain Security | Blocks `forge publish` for community |
+| ✅ **Done** | Core | 2.1 Shared Skill Runtime | Resource efficiency at scale |
+| ✅ **Done** | Core | 2.2 Session Memory (Redis) | Multi-turn conversation quality |
+| ✅ **Done** | Core | 2.3 WebSocket Routing Table | Horizontal gateway scaling |
+| ✅ **Done** | Billing | 3.1 Full Metering Pipeline | Revenue tracking |
+| ~~P2~~ | ~~UI~~ | ~~4.1 Agent Profile Selection~~ | ~~Resolved — single orchestrator model~~ |
+| ✅ **Done** | UI | 4.2 Auto-Generate Titles | UX polish |
+| ✅ **Done** | UI | 4.3 File Upload | Feature completeness |
+| ✅ **Done** | UI | 4.4 AI Elements Rendering | Visual polish |
+| ✅ **Done** | UI | 4.5 Dead Code Cleanup | Housekeeping |
+| ✅ **Done** | Forge | 5.1 Forge CLI `dev` Mode | Skill developer experience |
+| ✅ **Done** | Forge | 5.2 Skill Versioning | Ecosystem stability |
+| **Deferred** | Arch | 6.1 Binary Split | Deferred indefinitely — trigger: gateway needs 10x+ replicas vs control plane |
+| **Deferred** | Arch | 6.2 Protobuf WebSocket | Deferred indefinitely — trigger: measured latency/bandwidth bottleneck at scale |
+| ✅ **Done** | Arch | 6.3 Claim Latency SLA | Operational maturity |
+| ✅ **Done** | Docs | 7.1-7.2 ADR Cleanup + Guides | Documentation hygiene |
