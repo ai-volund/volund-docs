@@ -8,55 +8,80 @@ This document captures all items deferred from v1 (v0.1.0), organized by priorit
 
 These items are hard blockers for third-party Forge skill execution. Until they ship, only first-party (platform built-in) tools can run in agent pods.
 
-### 1.1 Agent Sandbox — gVisor Integration (Option B)
+### ~~1.1 Agent Sandbox — gVisor Integration (Option B)~~ — DONE
 
-**v1 state:** Tool execution uses subprocess isolation with process groups (`Setpgid`), ulimit resource limits (CPU, memory, file size, fd count, process count) on Linux, and per-call temp directory scoping. No kernel-level isolation.
+**v2 implementation (complete):**
 
-**Known gap:** A compromised or malicious tool can read the agent pod's memory and environment variables. Acceptable for v1 because all tools are first-party.
+**CRDs added to volund-operator:**
+- `SandboxTemplate` — Reusable pod spec per tenant: RuntimeClassName (gVisor), image, resources, managed NetworkPolicy (default-deny + DNS egress), security context
+- `SandboxWarmPool` — Pre-warmed sandbox pods with configurable replicas, HPA min/max, shutdown TTL. Controller creates/deletes pods to maintain target count, manages NetworkPolicy lifecycle
+- `SandboxClaim` — Claim lifecycle: Pending → Bound → Released/Failed. Controller finds unclaimed warm pod, labels it claimed, sets endpoint. Finalizer ensures pod cleanup on claim deletion. TTL auto-expiry for safety
 
-**v2 plan:** Integrate [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) (v0.2.x) for **tool execution only** (Option B). Agent pods remain managed by our operator. See [ADR-003 Amendment 2](adr/003-agent-sandbox.md) for the full integration design.
+**Sandbox Router (`volund-agent/cmd/sandbox-router`):**
+- Go HTTP service deployed per-cluster, manages SandboxClaim lifecycle via K8s API
+- Routes execution requests to correct sandbox pod endpoint
+- API: `POST /v1/sandboxes` (claim), `DELETE /v1/sandboxes/{id}` (release), proxy endpoints for execute/upload/download/list
+- In-memory session cache with per-conversation sandbox reuse
 
-**Key architectural decisions:**
-- agent-sandbox manages tool execution sandboxes only — not agent pods
-- Our operator continues managing `AgentWarmPool`, `AgentInstance`, `AgentProfile`, skill sidecars
-- Per-tenant `SandboxTemplate` with gVisor RuntimeClass + default-deny NetworkPolicy
-- Per-tenant `SandboxWarmPool` with HPA for pre-warmed sandbox pods
-- `run_code` tool creates `SandboxClaim` → gets pod from warm pool → calls Runtime API (`/execute`, `/upload`, `/download`)
-- Sandbox lifecycle tied to conversation (reused across `run_code` calls, cleaned up on conversation end)
-- Falls back to subprocess (v1) when `VOLUND_SANDBOX_ENDPOINT` is not configured (local dev)
+**SandboxExecutor dual-mode (`volund-agent/internal/tools/builtin/sandbox.go`):**
+- Direct mode (v1): talks to sandbox service endpoint
+- Router mode (v2): talks to Sandbox Router which manages claim lifecycle. Claims cached per conversation, released on conversation end
+- `RouterURL` takes precedence over `Endpoint`. Falls back to subprocess when neither is configured
 
-**Scope:**
-- Install agent-sandbox controller + extensions + gVisor RuntimeClass per cluster
-- Deploy Sandbox Router (FastAPI proxy) per cluster
-- Build `ghcr.io/ai-volund/sandbox-runtime` image (Python, Node.js, bash + HTTP Runtime API)
-- Implement `SandboxExecutor` backend in `run_code` tool (Go HTTP client → Router → Sandbox)
-- volund-operator creates `SandboxTemplate` + `SandboxWarmPool` per tenant namespace
-- RBAC: agent service account gets `create`/`delete`/`get`/`watch` on `SandboxClaim`
+**Deployment artifacts:**
+- `Dockerfile.sandbox-router` — Go binary in Alpine container
+- `deploy/sandbox-router.yaml` — ServiceAccount + RBAC (SandboxClaim CRUD/watch) + Deployment (2 replicas) + Service
+- gVisor RuntimeClass manifest in `deploy/sandbox-service.yaml`
 
 **Migration path:**
 | Phase | Backend | Isolation | Scope |
 |-------|---------|-----------|-------|
-| v1 (current) | Subprocess + ulimit | Process-level | First-party tools only |
-| v2 phase 1 | agent-sandbox + gVisor | Kernel-level | `run_code` tool |
+| v1 | Subprocess + ulimit | Process-level | First-party tools only |
+| **v2 phase 1 (current)** | **agent-sandbox + gVisor** | **Kernel-level** | **`run_code` tool** |
 | v2 phase 2 | agent-sandbox + gVisor | Kernel-level | All Forge third-party skills |
 | v2 phase 3 | WASM + agent-sandbox | Mixed | WASM for fast tools, sandbox for heavy |
 
 **Affected repos:** `volund-agent`, `volund-operator`
 **ADR references:** ADR-003 (Amendment 2), ADR-009
-**Blocks:** Third-party Forge skill execution, `forge publish` for community skills
 
-### 1.2 Prompt Injection Audit
+### ~~1.2 Prompt Injection Audit~~ — DONE
 
-**v1 state:** Tool permission model is documented in the security architecture. Action confirmation and output sanitization are designed but implementation status is unclear across the codebase.
+**v2 implementation (complete):**
 
-**v2 plan:** Audit all LLM-facing surfaces for injection vectors:
-- Tool result sanitization before re-injection into context
-- System prompt isolation from user-supplied content
-- Forge skill description sanitization (skill metadata is LLM-visible)
-- Output filtering for sensitive data (credentials, internal URLs)
-- Automated injection testing in CI (adversarial prompt test suite)
+**Expanded sanitization (`volund-agent/internal/safety/sanitize.go`):**
+- Unicode homoglyph normalization: Cyrillic substitutions, fullwidth chars, zero-width stripping, ligature expansion
+- Base64/hex encoded instruction detection: scans for encoded payloads that decode to injection patterns
+- 16 injection patterns: "ignore previous instructions", "developer mode", "DAN mode", "jailbreak", "bypass your", etc.
+- Multi-pass sanitization (up to 5 rounds) to prevent reconstruction attacks
+- Secret redaction: API keys (sk-*), Bearer tokens, AWS AKIA keys, password/token assignments, URLs with embedded credentials, k8s internal URLs, email PII
+- `SanitizeSkillMetadata()` for LLM-visible skill descriptions (1024 char limit + injection pattern blocking)
 
-**Affected repos:** `volund-agent`, `volund`
+**Security hooks wired into runtime (`volund-agent/internal/safety/hooks.go`):**
+- `ToolArgumentValidationHook` (BeforeHook): blocks tool calls with injection patterns in arguments (with Unicode normalization)
+- `SecretRedactionHook` (AfterHook): redacts credentials from all tool output
+- `OutputSizeLimitHook` (AfterHook): truncates oversized tool output to prevent context window exhaustion
+- All three hooks registered in `buildToolRegistry()` — applied to every tool execution
+
+**Skill description sanitization (`volund-agent/internal/skill/loader.go`):**
+- Skill `Description` and all `Parameter[].Description` sanitized via `SanitizeSkillMetadata` at load time
+- Prompt skill content sanitized before appending to system prompt
+- MCP tool descriptions from `discoverTools()` sanitized before building tool schemas
+
+**Adversarial test suite (`volund-agent/internal/safety/injection_test.go`):**
+- 11 top-level test functions, 100+ subtests covering:
+  - Role marker stripping (all variants, nested, combined)
+  - Boundary marker spoofing prevention
+  - Unicode homoglyph bypass detection (Cyrillic, fullwidth, zero-width, ligatures)
+  - Base64/hex encoded payload detection
+  - Indirect injection via tool output (fake system messages, boundary spoofing)
+  - Secret redaction (all 9 patterns + false positive checks)
+  - Skill metadata sanitization
+  - Nested/recursive attack prevention
+  - Context window exhaustion defense
+  - Hook integration (before/after blocking + registry integration)
+  - System prompt integrity verification
+
+**Affected repos:** `volund-agent`
 **ADR references:** ADR-009
 
 ### 1.3 Supply Chain Security for Forge Skills
@@ -336,8 +361,8 @@ These items are hard blockers for third-party Forge skill execution. Until they 
 
 | Priority | Theme | Items | Dependency |
 |----------|-------|-------|------------|
-| **P0 — Blocker** | Security | 1.1 Agent Sandbox (gVisor) | Blocks third-party Forge skills |
-| **P0 — Blocker** | Security | 1.2 Prompt Injection Audit | Blocks production deployment |
+| ✅ **Done** | Security | 1.1 Agent Sandbox (gVisor) | Blocks third-party Forge skills |
+| ✅ **Done** | Security | 1.2 Prompt Injection Audit | Blocks production deployment |
 | ✅ **Done** | Security | 1.3 Supply Chain Security | Blocks `forge publish` for community |
 | ✅ **Done** | Core | 2.1 Shared Skill Runtime | Resource efficiency at scale |
 | ✅ **Done** | Core | 2.2 Session Memory (Redis) | Multi-turn conversation quality |
