@@ -66,3 +66,7 @@ A [GitHub Action](.github/workflows/export-diagrams.yml) automatically converts 
 | [008](adr/008-observability.md) | Wide events + OpenTelemetry observability stack | Accepted |
 | [009](adr/009-security-model.md) | Multi-layer security model | Accepted |
 | [010](adr/010-agent-runtime-loop.md) | Two-tier agent runtime loop | Accepted |
+
+## Roadmap
+
+- [v2 Roadmap](v2_roadmap.md) — All deferred items from v1, organized by priority

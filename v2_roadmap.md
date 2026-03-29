@@ -1,0 +1,335 @@
+# VOLUND v2 Roadmap
+
+This document captures all items deferred from v1 (v0.1.0), organized by priority and theme. Each item includes context on why it was deferred, what the v1 state is, and what v2 requires.
+
+---
+
+## 1. Security & Sandboxing (Critical)
+
+These items are hard blockers for third-party Forge skill execution. Until they ship, only first-party (platform built-in) tools can run in agent pods.
+
+### 1.1 Agent Sandbox — gVisor Integration (Option B)
+
+**v1 state:** Tool execution uses subprocess isolation with process groups (`Setpgid`), ulimit resource limits (CPU, memory, file size, fd count, process count) on Linux, and per-call temp directory scoping. No kernel-level isolation.
+
+**Known gap:** A compromised or malicious tool can read the agent pod's memory and environment variables. Acceptable for v1 because all tools are first-party.
+
+**v2 plan:** Integrate [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) (v0.2.x) for **tool execution only** (Option B). Agent pods remain managed by our operator. See [ADR-003 Amendment 2](adr/003-agent-sandbox.md) for the full integration design.
+
+**Key architectural decisions:**
+- agent-sandbox manages tool execution sandboxes only — not agent pods
+- Our operator continues managing `AgentWarmPool`, `AgentInstance`, `AgentProfile`, skill sidecars
+- Per-tenant `SandboxTemplate` with gVisor RuntimeClass + default-deny NetworkPolicy
+- Per-tenant `SandboxWarmPool` with HPA for pre-warmed sandbox pods
+- `run_code` tool creates `SandboxClaim` → gets pod from warm pool → calls Runtime API (`/execute`, `/upload`, `/download`)
+- Sandbox lifecycle tied to conversation (reused across `run_code` calls, cleaned up on conversation end)
+- Falls back to subprocess (v1) when `VOLUND_SANDBOX_ENDPOINT` is not configured (local dev)
+
+**Scope:**
+- Install agent-sandbox controller + extensions + gVisor RuntimeClass per cluster
+- Deploy Sandbox Router (FastAPI proxy) per cluster
+- Build `ghcr.io/ai-volund/sandbox-runtime` image (Python, Node.js, bash + HTTP Runtime API)
+- Implement `SandboxExecutor` backend in `run_code` tool (Go HTTP client → Router → Sandbox)
+- volund-operator creates `SandboxTemplate` + `SandboxWarmPool` per tenant namespace
+- RBAC: agent service account gets `create`/`delete`/`get`/`watch` on `SandboxClaim`
+
+**Migration path:**
+| Phase | Backend | Isolation | Scope |
+|-------|---------|-----------|-------|
+| v1 (current) | Subprocess + ulimit | Process-level | First-party tools only |
+| v2 phase 1 | agent-sandbox + gVisor | Kernel-level | `run_code` tool |
+| v2 phase 2 | agent-sandbox + gVisor | Kernel-level | All Forge third-party skills |
+| v2 phase 3 | WASM + agent-sandbox | Mixed | WASM for fast tools, sandbox for heavy |
+
+**Affected repos:** `volund-agent`, `volund-operator`
+**ADR references:** ADR-003 (Amendment 2), ADR-009
+**Blocks:** Third-party Forge skill execution, `forge publish` for community skills
+
+### 1.2 Prompt Injection Audit
+
+**v1 state:** Tool permission model is documented in the security architecture. Action confirmation and output sanitization are designed but implementation status is unclear across the codebase.
+
+**v2 plan:** Audit all LLM-facing surfaces for injection vectors:
+- Tool result sanitization before re-injection into context
+- System prompt isolation from user-supplied content
+- Forge skill description sanitization (skill metadata is LLM-visible)
+- Output filtering for sensitive data (credentials, internal URLs)
+- Automated injection testing in CI (adversarial prompt test suite)
+
+**Affected repos:** `volund-agent`, `volund`
+**ADR references:** ADR-009
+
+### 1.3 Supply Chain Security for Forge Skills
+
+**v1 state:** Permission declarations are validated in skill manifests, but "unusual permission" flagging logic is deferred. No automated security scanning of published skills.
+
+**v2 plan:**
+- Static analysis pipeline for skill code on `forge publish`
+- Permission audit: flag skills requesting unusual combinations (e.g., network + filesystem)
+- Dependency scanning for MCP skill containers
+- Signing and provenance attestation for published skills
+- Community review/flagging system in Forge marketplace
+
+**Affected repos:** `volund-forge`, `volund`
+
+---
+
+## 2. Core Platform Features (High Priority)
+
+### 2.1 Shared Skill Runtime
+
+**v1 state:** Every skill runs as a sidecar container per agent pod (stdio transport). This works but is wasteful for stateless API-proxy skills (GitHub, Slack, email) where one instance could serve all agents in a tenant.
+
+**v2 plan:** Add `runtime.mode: shared` to the Skill CRD. When set:
+- Operator deploys skill as a shared `Deployment` per tenant namespace
+- Agent connects via HTTP+SSE transport instead of stdio
+- One instance serves all agents in the tenant
+- Sidecar remains the default; shared is an optimization
+
+**Architecture (from ARCHITECTURE.md):**
+```
+┌──────────────────────────────────┐
+│  Tenant Namespace                │
+│  ┌────────────┐ ┌────────────┐  │
+│  │ Agent Pod A │ │ Agent Pod B │ │
+│  └─────┬──────┘ └──────┬─────┘  │
+│        │               │         │
+│  ┌─────▼───────────────▼─────┐  │
+│  │ skill-github (Deployment) │  │
+│  │ shared per-tenant          │  │
+│  └───────────────────────────┘  │
+└──────────────────────────────────┘
+```
+
+**Affected repos:** `volund-operator`, `volund-agent`
+**ADR references:** ADR-003, ADR-004
+
+### 2.2 Session Memory (Redis)
+
+**v1 state:** Working memory is in-process `[]Message` — discarded after each task. The `memory.Manager` interface exists and is injected at startup. Long-term memory (pgvector) has DB schema, repos, decay scoring, dedup, and `RetrieveContext` wired into the runtime loop. But per-conversation session memory (Redis) is not yet implemented.
+
+**v2 plan:**
+- Redis-backed session memory with per-conversation key space
+- Configurable TTL (default 24h)
+- Sliding window context: most recent messages fit within model context, older messages summarized or dropped
+- Session namespace: `{tenantId}.{conversationId}`
+
+**Memory tier model:**
+
+| Tier | Storage | Scope | TTL | Status |
+|------|---------|-------|-----|--------|
+| Working memory | In-process `[]Message` | Current turn | Discarded after turn | v1 complete |
+| Session memory | Redis | Per conversation | Configurable (24h default) | **v2** |
+| Long-term memory | pgvector | Per agent profile | Permanent (up to quota) | v1 partial (schema + retrieval wired) |
+
+**Additional v2 memory work:**
+- Shared namespace: `{tenantId}.shared` — readable by all profiles in a tenant for uploaded files and shared knowledge
+- Memory consolidation background job: dedup, summarization, decay pruning (frequency and resource budget TBD)
+- Context window budget enforcement: sliding window before each LLM call
+
+**Affected repos:** `volund-agent`, `volund`
+**ADR references:** ADR-006, ADR-010
+
+### 2.3 WebSocket Routing Table
+
+**v1 state:** Gateway uses direct instance lookup for WebSocket event forwarding (see `volund/internal/gateway/ws.go:151` — "For v1 we use a well-known instance lookup; v2 will use the routing table").
+
+**v2 plan:**
+- Replace direct instance lookup with a routing table backed by Redis or NATS KV
+- Support multi-gateway deployments (horizontal scaling)
+- Route WebSocket connections to the correct gateway instance holding the NATS subscription
+- Graceful handoff on gateway restart
+
+**Affected repos:** `volund`
+
+---
+
+## 3. Billing & Usage (Medium Priority)
+
+### 3.1 Full Metering Pipeline
+
+**v1 state:** LLM token tracking works end-to-end: agent emits `io.volund.usage.tokens` CloudEvents, gateway subscribes and persists to `usage_events` table, `GET /v1/usage/summary` API returns aggregated data. UI shows token counts and per-model breakdown.
+
+**v2 plan — additional metering dimensions:**
+- **Compute time:** CPU/memory seconds per agent task (from pod resource metrics)
+- **Storage:** Database rows, pgvector entries, object store usage per tenant
+- **Billing periods:** Monthly close-out with invoice generation
+- **Multi-dimensional quotas:** Token limits + compute limits + storage limits per tenant/plan
+- **Budget enforcement:** Configurable actions on quota breach (queue, downgrade tier, alert, hard block)
+- **Budget alert webhooks:** Notify tenant admins at 80%/90%/100% thresholds
+
+**Affected repos:** `volund`, `volund-agent`
+**ADR references:** Billing/usage architecture doc
+
+---
+
+## 4. Desktop & UI Polish (Medium Priority)
+
+### 4.1 Agent Profile Selection Per Conversation
+
+**v1 state:** Users cannot choose which agent profile handles a conversation. The platform uses a default profile.
+
+**v2 plan:**
+- Profile picker dropdown in chat view (before or during conversation)
+- Per-conversation profile binding stored in conversation metadata
+- Profile switch mid-conversation (new agent_start event)
+- Show active profile name/icon in chat header
+
+**Affected repos:** `volund-desktop`, `volund`
+
+### 4.2 Auto-Generate Conversation Titles
+
+**v1 state:** All conversations display as "New conversation" in the sidebar.
+
+**v2 plan:**
+- After first assistant response, generate a short title from the conversation content
+- Use a lightweight LLM call or heuristic (first user message summary)
+- `PATCH /v1/conversations/{id}` already exists for title updates
+- User can still manually rename
+
+**Affected repos:** `volund-desktop` (frontend only, API exists)
+
+### 4.3 File Upload / Attachments
+
+**v1 state:** No file upload support. Messages are text-only.
+
+**v2 plan:**
+- File upload endpoint: `POST /v1/conversations/{id}/attachments`
+- Object storage backend (S3-compatible or local PVC)
+- Attachment references in message content parts
+- File type restrictions and size limits per tenant plan
+- Image/PDF preview in chat view
+- Files available to agent tools (read_file, analyze_image)
+
+**Affected repos:** `volund-desktop`, `volund`, `volund-agent`
+
+### 4.4 AI Elements Rich Tool Rendering
+
+**v1 state:** Tool invocations display as collapsible blocks with name, status icon, and raw output. Functional but not rich.
+
+**v2 plan:**
+- Integrate AI SDK AI Elements for tool-specific rendering
+- Custom renderers per tool type: code blocks with syntax highlighting, search results as cards, charts for data tools
+- Streaming tool output (progressive rendering as tool runs)
+- Interactive tool results (e.g., clickable links from web_search)
+
+**Affected repos:** `volund-desktop`
+
+### 4.5 Dead Code Cleanup
+
+**v1 state:** `volund-desktop/src/lib/use-volund-chat.ts` is a legacy lightweight chat hook that predates the AI SDK `WebSocketChatTransport`. It is no longer used.
+
+**v2 plan:** Remove the file. No functional impact.
+
+**Affected repos:** `volund-desktop`
+
+---
+
+## 5. Forge & Skill Ecosystem (Medium Priority)
+
+### 5.1 Forge CLI `dev` Mode
+
+**v1 state:** `forge dev` command exists but prints TODO stubs (see `volund-forge/internal/cmd/dev.go:91,97`). Cannot launch MCP server binaries or proxy stdio for local skill development.
+
+**v2 plan:**
+- Launch the MCP server binary from skill spec (`forge dev` starts the server)
+- Proxy stdio between the dev agent and the skill server
+- Hot reload on skill code changes
+- Local test harness: send sample tool calls, inspect responses
+- Integration with `forge test` for automated validation
+
+**Affected repos:** `volund-forge`
+
+### 5.2 Skill Versioning & Updates
+
+**v1 state:** Skills have version fields in CRDs but no upgrade/rollback workflow.
+
+**v2 plan:**
+- Semantic versioning enforcement on `forge publish`
+- Agent profiles pin to skill version ranges (e.g., `^1.2.0`)
+- Automatic minor version updates with rollback on failure
+- Breaking change detection between skill versions
+- Deprecation notices and migration guides in Forge UI
+
+**Affected repos:** `volund-forge`, `volund-operator`, `volund`
+
+---
+
+## 6. Architecture Evolution (Low Priority)
+
+### 6.1 Binary Split — Gateway + Control Plane
+
+**v1 state:** Gateway and control plane run as a single `volund` binary with subcommands. Internal packages are structured to support splitting later.
+
+**v2 plan (if needed):**
+- Split into separate `volund-gateway` and `volund-controlplane` binaries
+- Independent scaling (gateway is stateless + horizontally scalable, control plane manages state)
+- Only worth doing if scaling characteristics diverge significantly
+
+**ADR references:** ADR-001 ("split later if needed")
+**Trigger:** When gateway needs 10x+ replicas relative to control plane
+
+### 6.2 Protocol Buffers for WebSocket
+
+**v1 state:** WebSocket events use JSON encoding.
+
+**v2 plan (if needed):**
+- Replace JSON with Protocol Buffers for WebSocket event encoding
+- Reduces message size and parsing overhead
+- Only worth doing if bandwidth or latency becomes a bottleneck
+
+**ADR references:** Channel adapter architecture doc
+**Trigger:** Measured latency or bandwidth issues at scale
+
+### 6.3 Warm Pool Claim Latency SLA
+
+**v1 state:** Warm pool claim takes ~200-600ms (cold start). No explicit SLA target.
+
+**v2 plan:**
+- Define P50/P95/P99 latency targets for warm pool claims
+- Prometheus alerting on claim latency breaches
+- Pre-warming strategies based on usage patterns (time-of-day, tenant activity)
+- Claim latency tracked in Grafana dashboard
+
+**Affected repos:** `volund`, `volund-operator`
+
+---
+
+## 7. Documentation & ADR Cleanup
+
+### 7.1 Stale ADR References
+
+**ADR-010** states v1 ships `NoopManager` for memory, but the actual codebase has pgvector repos, decay scoring, dedup, and `RetrieveContext` wired into the runtime loop. The ADR should be amended to reflect the current memory implementation state.
+
+**ARCHITECTURE.md Phase 5** marks "gVisor sandbox for run_code tool" as complete, but v1 actually uses subprocess + ulimit. The checkbox should be corrected to reflect the v1 implementation accurately.
+
+### 7.2 Missing Documentation
+
+- Deployment guide for production (Helm values, TLS, secrets management)
+- Skill development tutorial (end-to-end: init, develop, test, publish)
+- API reference (auto-generated from protobuf + OpenAPI)
+- Runbook for common operational scenarios (warm pool scaling, agent crashes, NATS partitions)
+
+---
+
+## Priority Matrix
+
+| Priority | Theme | Items | Dependency |
+|----------|-------|-------|------------|
+| **P0 — Blocker** | Security | 1.1 Agent Sandbox (gVisor) | Blocks third-party Forge skills |
+| **P0 — Blocker** | Security | 1.2 Prompt Injection Audit | Blocks production deployment |
+| **P1 — High** | Security | 1.3 Supply Chain Security | Blocks `forge publish` for community |
+| **P1 — High** | Core | 2.1 Shared Skill Runtime | Resource efficiency at scale |
+| **P1 — High** | Core | 2.2 Session Memory (Redis) | Multi-turn conversation quality |
+| **P1 — High** | Core | 2.3 WebSocket Routing Table | Horizontal gateway scaling |
+| **P2 — Medium** | Billing | 3.1 Full Metering Pipeline | Revenue tracking |
+| **P2 — Medium** | UI | 4.1 Agent Profile Selection | Core UX for multi-agent |
+| **P2 — Medium** | UI | 4.2 Auto-Generate Titles | UX polish |
+| **P2 — Medium** | UI | 4.3 File Upload | Feature completeness |
+| **P2 — Medium** | UI | 4.4 AI Elements Rendering | Visual polish |
+| **P2 — Medium** | Forge | 5.1 Forge CLI `dev` Mode | Skill developer experience |
+| **P2 — Medium** | Forge | 5.2 Skill Versioning | Ecosystem stability |
+| **P3 — Low** | Arch | 6.1 Binary Split | Only if scaling requires it |
+| **P3 — Low** | Arch | 6.2 Protobuf WebSocket | Only if bandwidth is an issue |
+| **P3 — Low** | Arch | 6.3 Claim Latency SLA | Operational maturity |
+| **P3 — Low** | Docs | 7.1-7.2 ADR Cleanup + Guides | Documentation hygiene |
