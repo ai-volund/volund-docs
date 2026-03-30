@@ -240,15 +240,15 @@ Update admin dashboard to use this instead of `/healthz`.
 
 ## Priority Summary
 
-| Phase | Focus | Priority | Items |
-|-------|-------|----------|-------|
-| **1** | Security & Access Control | P0 | 1.1–1.5 |
-| **2** | Dynamic LLM Provider Management | P0 | 2.1–2.4 |
-| **3** | Operational Visibility | P1 | 3.1–3.5 |
-| **4** | User Experience | P1 | 4.1–4.5 |
-| **5** | Multi-Tenancy & Billing | P2 | 5.1–5.5 |
-| **6** | Developer Experience | P2 | 6.1–6.4 |
-| **7** | Hardening | P3 | 7.1–7.5 |
+| Phase | Focus | Priority | Done | Remaining |
+|-------|-------|----------|------|-----------|
+| **1** | Security & Access Control | P0 | 4/5 | 1.5 CSRF |
+| **2** | Dynamic LLM Provider Management | P0 | 3/4 | 2.4 per-tenant config |
+| **3** | Operational Visibility | P1 | 4/5 | 3.4 log aggregation |
+| **4** | User Experience | P1 | 2/5 | 4.2 onboarding, 4.3 skill deps, 4.4 notifications |
+| **5** | Multi-Tenancy & Billing | P2 | 2/5 | 5.1 enforcement, 5.4 Stripe, 5.5 cross-tenant dispatch |
+| **6** | Developer Experience | P2 | 3/4 | 6.3 forge dev integration |
+| **7** | Hardening | P3 | 1/5 | 7.1 rotation, 7.3 backups, 7.4 isolation tests, 7.5 revocation |
 
 ---
 
