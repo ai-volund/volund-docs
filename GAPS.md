@@ -8,25 +8,17 @@ This document tracks known gaps, missing features, and the plan to address them 
 
 ## Phase 1: Security & Access Control (P0)
 
-### 1.1 Admin UI Role Guard
-**Gap:** Any authenticated user can access the admin UI. No role check.
-**Fix:** Check for `platform_admin`/`admin`/`owner` role in the admin UI's `App.tsx` after session load. Show "Access Denied" for regular users. Also add a `RequireAdmin` middleware wrapper on all `/v1/admin/*` gateway endpoints.
-**Repos:** `volund-admin`, `volund`
+### 1.1 Admin UI Role Guard ✅
+**Done:** `useAdminRole` hook checks JWT for `platform_admin`/`admin`. Shows `AccessDenied` component for non-admin users. `RequireAdmin` middleware on all `/v1/admin/*` endpoints.
 
-### 1.2 Admin Role Promotion API
-**Gap:** No way to promote users to admin except raw SQL. Admins can't manage other admins.
-**Fix:** Add `PUT /v1/admin/tenants/{id}/members/{userId}/role` endpoint. Add a "Members" management page to the admin UI with role dropdowns.
-**Repos:** `volund`, `volund-admin`
+### 1.2 Admin Role Promotion API ✅
+**Done:** `PUT /v1/admin/tenants/{id}/members/{userId}/role` + `DELETE /v1/admin/tenants/{id}/members/{userId}`. Backend complete. Admin UI member management page TODO.
 
-### 1.3 Admin API Authorization Audit
-**Gap:** Some `/v1/admin/*` endpoints accept any authenticated user (e.g. skill install). Should require admin role.
-**Fix:** Audit all admin endpoints, add `requireAdmin()` check to each. Create a `RequireAdmin` middleware similar to `RequireAuth`.
-**Repos:** `volund`
+### 1.3 Admin API Authorization Audit ✅
+**Done:** All `/v1/admin/*` routes now use `RequireAdmin` middleware. Only `platform_admin` and `admin` roles have access. `owner` is tenant-level only.
 
-### 1.4 CORS Lockdown
-**Gap:** Gateway has `Access-Control-Allow-Origin: *`. Fine for dev, dangerous in production.
-**Fix:** Add `VOLUND_CORS_ORIGINS` config that defaults to `*` in dev and must be explicitly set in production. Reject requests from unknown origins.
-**Repos:** `volund`
+### 1.4 CORS Lockdown ✅
+**Done:** `CORSMiddleware` reads `VOLUND_CORS_ORIGINS` env var. Defaults to `*` in dev. Validates `Origin` header when explicit origins are set.
 
 ### 1.5 CSRF Protection
 **Gap:** better-auth sessions use cookies with `SameSite=Lax` but the gateway doesn't verify CSRF tokens for state-changing requests.
@@ -37,8 +29,8 @@ This document tracks known gaps, missing features, and the plan to address them 
 
 ## Phase 2: Dynamic LLM Provider Management (P0)
 
-### 2.1 Admin API for LLM Providers
-**Gap:** LLM providers (OpenAI, Anthropic, Ollama) are hardcoded via env vars at startup. Admin can't add/remove/configure providers at runtime.
+### 2.1 Admin API for LLM Providers ✅
+**Done:** Full CRUD + test + models endpoints implemented. DB table `llm_providers`. Hot-reload on changes. Loads DB providers at startup alongside env vars.
 **Fix:** New admin endpoints + database table for provider config:
 
 ```
@@ -74,22 +66,11 @@ CREATE TABLE llm_providers (
 
 **Repos:** `volund` (new endpoints, DB migration, router changes), `volund-admin` (new Providers → LLM page)
 
-### 2.2 Admin UI — LLM Provider Management Page
-**Gap:** No UI to manage LLM providers. Admin UI Providers page only shows OAuth providers.
-**Fix:** Add a new "LLM Providers" section (or separate page) in the admin UI:
-- List configured providers with status (connected/error), model count, total requests
-- "Add Provider" dialog — pick type (OpenAI, Anthropic, Ollama, OpenAI-compatible), enter API key / base URL
-- "Test Connection" button — verifies API key and lists available models
-- Edit/delete existing providers
-- Model catalog view — all models across all providers with pricing info
-- Per-tenant model restrictions (optional) — control which tenants can use which models
+### 2.2 Admin UI — LLM Provider Management Page ✅
+**Done:** New "LLM Providers" page with Add/Edit/Delete, type selection (OpenAI, Anthropic, Ollama, OpenAI-compatible), Test Connection, Enable/Disable toggle, and Available Models catalog.
 
-**Repos:** `volund-admin`
-
-### 2.3 OpenAI-Compatible Provider Type
-**Gap:** Only OpenAI, Anthropic, and Ollama are supported. Many platforms expose OpenAI-compatible APIs (Azure, Together, Groq, LM Studio, vLLM, llama.cpp).
-**Fix:** The OpenAI provider already supports `base_url` override. Formalize this as an "OpenAI-compatible" provider type in the admin UI with fields for: name, base URL, API key, and optional model override list.
-**Repos:** `volund`, `volund-admin`
+### 2.3 OpenAI-Compatible Provider Type ✅
+**Done:** "openai-compatible" type supported in both API and UI. Uses the OpenAI provider implementation with custom `base_url`. Works with Azure, Together, Groq, LM Studio, vLLM, etc.
 
 ### 2.4 Per-Tenant Provider & Model Config
 **Gap:** All tenants share the same providers. No way to restrict which models a tenant can use or set per-tenant API keys.
@@ -100,9 +81,9 @@ CREATE TABLE llm_providers (
 
 ## Phase 3: Operational Visibility (P1)
 
-### 3.1 Agent Instance & Warm Pool Dashboard
-**Gap:** Admin can't see running agent pods, warm pool utilization, or force-release stuck instances.
-**Fix:** New endpoints:
+### 3.1 Agent Instance & Warm Pool Dashboard ✅
+**Done:** GET /v1/admin/instances, DELETE /v1/admin/instances/{id}, GET /v1/admin/warmpool. Admin UI Instances page with pod table + warm pool stat cards.
+**Original fix:** New endpoints:
 ```
 GET    /v1/admin/instances          — list all instances (pod, state, tenant, profile, uptime)
 GET    /v1/admin/instances/{id}     — instance detail
@@ -112,8 +93,9 @@ GET    /v1/admin/warmpool           — pool stats (total, available, claimed, b
 Add "Instances" tab to admin Agents page with live pod status and warm pool utilization bars.
 **Repos:** `volund`, `volund-admin`
 
-### 3.2 Platform Health Endpoint
-**Gap:** `/healthz` only checks gateway. No visibility into NATS, Postgres, Redis, operator, auth service.
+### 3.2 Platform Health Endpoint ✅
+**Done:** GET /v1/admin/health checks postgres, auth service, warm pool. Dashboard shows real health badges.
+**Original gap:** `/healthz` only checks gateway. No visibility into NATS, Postgres, Redis, operator, auth service.
 **Fix:** New `GET /v1/admin/health` that checks all dependencies:
 ```json
 {
@@ -129,8 +111,9 @@ Add "Instances" tab to admin Agents page with live pod status and warm pool util
 Update admin dashboard to use this instead of `/healthz`.
 **Repos:** `volund`, `volund-admin`
 
-### 3.3 Audit Log
-**Gap:** No general audit trail. Only credential audit exists.
+### 3.3 Audit Log ✅
+**Done:** audit_log table (migration 016), AuditRepo, GET /v1/admin/audit. Admin UI Audit Log page with filterable table.
+**Original gap:** No general audit trail. Only credential audit exists.
 **Fix:** Add `audit_log` table + middleware that logs all state-changing API calls (POST/PUT/DELETE) with user, tenant, action, resource, timestamp. Admin UI page to browse/filter.
 **Repos:** `volund`, `volund-admin`
 
@@ -168,9 +151,8 @@ Update admin dashboard to use this instead of `/healthz`.
 **Fix:** Browser Notification API for web. Tauri native notifications for desktop. Subscribe to NATS events for the user's conversations.
 **Repos:** `volund-desktop`
 
-### 4.5 Email Transport
-**Gap:** better-auth has email verification and password reset flows but no email delivery is configured.
-**Fix:** Add SMTP/Resend/SendGrid config to volund-auth. Configure `emailAndPassword.sendResetPassword` and `emailVerification` in better-auth.
+### 4.5 Email Transport ✅ (config added)
+**Done:** SMTP env vars added to volund-auth (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM). Wiring into better-auth email handlers is TODO.
 **Repos:** `volund-auth`
 
 ---
@@ -221,9 +203,8 @@ Update admin dashboard to use this instead of `/healthz`.
 **Fix:** `forge dev --connect` registers a temporary skill pointing at the local dev server so agents can use it in real conversations.
 **Repos:** `volund-forge`
 
-### 6.4 API Key Management
-**Gap:** `api_keys` table exists but no UI or API to create/revoke keys.
-**Fix:** Add CRUD endpoints for API keys. Desktop Settings page + Admin UI page for managing keys. Keys can be used as `Authorization: Bearer <api-key>` for programmatic access.
+### 6.4 API Key Management ✅ (API done)
+**Done:** POST/GET/DELETE /v1/apikeys endpoints. Keys use sha256 hash, vk_ prefix. UI integration TODO.
 **Repos:** `volund`, `volund-desktop`, `volund-admin`
 
 ---
