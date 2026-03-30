@@ -174,10 +174,8 @@ Update admin dashboard to use this instead of `/healthz`.
 **Fix:** Add `user_id` to usage events. New endpoint `GET /v1/usage/users` for per-user breakdown. Admin UI table.
 **Repos:** `volund`, `volund-admin`
 
-### 5.4 Billing Integration
-**Gap:** `plan` field exists (free/pro/enterprise) but no payment processing.
-**Fix:** Stripe integration — subscription management, usage-based billing, invoicing. Admin UI billing page.
-**Repos:** `volund`, `volund-admin`
+### 5.4 ~~Billing Integration~~ — REMOVED
+Not needed — VOLUND is a self-hosted platform, not SaaS. Tenant plans are used for quota tiers only.
 
 ### 5.5 System Agent Cross-Tenant Dispatch
 **Gap:** System agents are visible cross-tenant (fixed) but dispatching a task to one may fail because the profile's `tenant_id` doesn't match the requesting user's tenant.
@@ -246,7 +244,7 @@ Update admin dashboard to use this instead of `/healthz`.
 | **2** | Dynamic LLM Provider Management | P0 | 3/4 | 2.4 per-tenant config |
 | **3** | Operational Visibility | P1 | 4/5 | 3.4 log aggregation |
 | **4** | User Experience | P1 | 2/5 | 4.2 onboarding, 4.3 skill deps, 4.4 notifications |
-| **5** | Multi-Tenancy & Billing | P2 | 2/5 | 5.1 enforcement, 5.4 Stripe, 5.5 cross-tenant dispatch |
+| **5** | Multi-Tenancy & Quotas | P2 | 2/4 | 5.1 enforcement, 5.5 cross-tenant dispatch |
 | **6** | Developer Experience | P2 | 3/4 | 6.3 forge dev integration |
 | **7** | Hardening | P3 | 1/5 | 7.1 rotation, 7.3 backups, 7.4 isolation tests, 7.5 revocation |
 
