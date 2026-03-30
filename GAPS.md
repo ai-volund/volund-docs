@@ -236,6 +236,42 @@ Not needed — VOLUND is a self-hosted platform, not SaaS. Tenant plans are used
 
 ---
 
+---
+
+## Phase 8: New Features (P1)
+
+### 8.1 Agent Teams
+**Gap:** No way to group agents into coordinated teams. Users can only chat with individual agents.
+**Fix:** Teams are named groups of agents with an orchestrator that delegates tasks to specialists. Architecture:
+
+- New `teams` table: id, tenant_id, name, description, orchestrator_profile_id, member_profile_ids
+- CRUD endpoints: POST/GET/PUT/DELETE /v1/teams
+- Team chat: start a conversation with a team instead of a single agent. The orchestrator routes sub-tasks to team members.
+- Admin UI: team management page
+- Desktop UI: Teams page (placeholder added), team selection in new conversation dialog
+
+**Repos:** `volund`, `volund-agent`, `volund-desktop`, `volund-admin`
+
+### 8.2 Scheduled Workflows
+**Gap:** No way to run agents on a schedule. Users must manually start conversations.
+**Fix:** Cron-based agent execution with configurable output delivery. Architecture:
+
+- New `schedules` table: id, tenant_id, user_id, name, cron_expression, agent_profile_id, prompt, delivery_method (conversation/email/webhook), delivery_config, enabled, last_run, next_run
+- CRUD endpoints: POST/GET/PUT/DELETE /v1/schedules
+- Scheduler service: runs as a goroutine in the gateway, checks for due schedules every minute, dispatches tasks
+- Delivery methods:
+  - **conversation**: creates a new conversation with the results
+  - **email**: sends results via SMTP (requires email transport)
+  - **webhook**: POSTs results to a URL
+- Desktop UI: Schedules page with cron builder, agent picker, delivery config
+- Admin UI: view all schedules across tenants, disable/enable
+
+**Example:** "Every morning at 6am, use the Research Analyst agent to check for the latest AI news and create a summary, then email it to me."
+
+**Repos:** `volund` (DB, scheduler, API), `volund-desktop` (UI), `volund-admin` (admin view)
+
+---
+
 ## Priority Summary
 
 | Phase | Focus | Priority | Done | Remaining |
@@ -247,6 +283,7 @@ Not needed — VOLUND is a self-hosted platform, not SaaS. Tenant plans are used
 | **5** | Multi-Tenancy & Quotas | P2 | 2/4 | 5.1 enforcement, 5.5 cross-tenant dispatch |
 | **6** | Developer Experience | P2 | 3/4 | 6.3 forge dev integration |
 | **7** | Hardening | P3 | 1/5 | 7.1 rotation, 7.3 backups, 7.4 isolation tests, 7.5 revocation |
+| **8** | New Features | P1 | 0/2 | 8.1 agent teams, 8.2 scheduled workflows |
 
 ---
 
